@@ -1,6 +1,5 @@
 package org.example.domain.model.attributes;
 
-import lombok.Builder;
 import lombok.Data;
 import org.w3c.dom.Element;
 import java.util.ArrayList;
@@ -8,22 +7,14 @@ import java.util.List;
 
 /**
  * Атрибуты ожидаемого результата шага тест-кейса.
- * Содержит информацию о состоянии, ответе бота и других параметрах результата.
+ * Содержит список ожидаемых результатов для одного шага.
+ * Поддерживает множественные проверки responseData и комбинацию state+botResponse.
+ * Каждый responseData сохраняется как отдельный результат.
  */
 @Data
-@Builder
 public class ExpectedResultAttributes {
-    /** Ожидаемое состояние */
-    private String state;
-    
-    /** Ожидаемый ответ бота */
-    private String botResponse;
-    
-    /** Поле для проверки */
-    private String field;
-    
-    /** Ожидаемые данные ответа */
-    private String responseData;
+    /** Список ожидаемых результатов */
+    private final List<ExpectedResult> results = new ArrayList<>();
     
     /**
      * Проверяет, является ли узел XML узлом результата.
@@ -48,17 +39,24 @@ public class ExpectedResultAttributes {
         String nodeName = element.getNodeName();
         String text = element.getTextContent().trim();
         
-        return switch (nodeName) {
-            case "a" -> ExpectedResultAttributes.builder()
+        ExpectedResultAttributes attributes = new ExpectedResultAttributes();
+        ExpectedResult result = switch (nodeName) {
+            case "a" -> ExpectedResult.builder()
                 .state(element.getAttribute("state"))
                 .botResponse(text)
                 .build();
-            case "responseData" -> ExpectedResultAttributes.builder()
+            case "responseData" -> ExpectedResult.builder()
                 .field(element.getAttribute("field"))
-                .responseData(text)
+                .fieldValue(text)
                 .build();
             default -> null;
         };
+        
+        if (result != null) {
+            attributes.results.add(result);
+        }
+        
+        return attributes;
     }
     
     /**
@@ -67,26 +65,8 @@ public class ExpectedResultAttributes {
      * @return список строк с ожидаемыми результатами
      */
     public List<String> toExpectedResults() {
-        List<String> results = new ArrayList<>();
-        
-        if (state != null && !state.isEmpty()) {
-            results.add("state = '" + state + "'");
-        }
-        
-        if (botResponse != null && !botResponse.isEmpty()) {
-            results.add("Ответ бота:\n" + botResponse);
-        }
-        
-        if (field != null) {
-            if ("replies".equals(field)) {
-                results.add("Ожидаемое тело:\n" + responseData);
-            } else if (responseData == null || responseData.isEmpty()) {
-                results.add("Ключ " + field + " не равен NULL/существует в ответе");
-            } else {
-                results.add("Элемент тела\n " + field + " имеет значение\n" + responseData);
-            }
-        }
-        
-        return results;
+        return results.stream()
+            .map(ExpectedResult::format)
+            .toList();
     }
 }

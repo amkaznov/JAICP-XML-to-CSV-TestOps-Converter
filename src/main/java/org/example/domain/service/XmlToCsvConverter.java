@@ -119,6 +119,7 @@ public class XmlToCsvConverter {
     private List<Step> parseSteps(Element testCaseElement) {
         List<Step> steps = new ArrayList<>();
         Step.StepBuilder currentStep = null;
+        List<String> currentExpectedResults = new ArrayList<>();
         
         NodeList nodes = testCaseElement.getChildNodes();
         for (int i = 0; i < nodes.getLength(); i++) {
@@ -130,23 +131,28 @@ public class XmlToCsvConverter {
             Element elem = (Element) node;
 
             if (StepAttributes.isStepNode(nodeName)) {
+                // Если есть предыдущий шаг, завершаем его
                 if (currentStep != null) {
+                    currentStep.expectedResults(currentExpectedResults);
                     steps.add(currentStep.build());
                 }
+                // Начинаем новый шаг
                 StepAttributes attributes = StepAttributes.fromNodeName(nodeName, text);
                 currentStep = Step.builder().attributes(attributes);
                 if (attributes.hasSubSteps()) {
                     currentStep.subSteps(List.of(attributes.getSubSteps()));
                 }
+                currentExpectedResults = new ArrayList<>();
             } else if (ExpectedResultAttributes.isResultNode(nodeName) && currentStep != null) {
+                // Добавляем новые ожидаемые результаты к текущему шагу
                 ExpectedResultAttributes resultAttributes = ExpectedResultAttributes.fromElement(elem);
-                currentStep.expectedResults(resultAttributes.toExpectedResults());
-                steps.add(currentStep.build());
-                currentStep = null;
+                currentExpectedResults.addAll(resultAttributes.toExpectedResults());
             }
         }
         
+        // Завершаем последний шаг, если он есть
         if (currentStep != null) {
+            currentStep.expectedResults(currentExpectedResults);
             steps.add(currentStep.build());
         }
 
@@ -181,37 +187,47 @@ public class XmlToCsvConverter {
         Element query = (Element) mockData.getElementsByTagName("query").item(0);
         Element response = (Element) mockData.getElementsByTagName("response").item(0);
         
-        // Получаем параметры, если они есть
-        String requestBody = Optional.ofNullable(mockData.getElementsByTagName("parameters").item(0))
+        // Собираем все параметры в Map
+        Map<String, String> parameters = Optional.ofNullable(mockData.getElementsByTagName("parameters").item(0))
             .map(Element.class::cast)
-            .map(parameters -> StreamSupport.stream(
+            .map(params -> StreamSupport.stream(
                 Spliterators.spliteratorUnknownSize(
-                    new NodeListIterator(parameters.getChildNodes()),
+                    new NodeListIterator(params.getChildNodes()),
                     Spliterator.ORDERED
                 ),
                 false
             )
             .filter(node -> node.getNodeType() == Node.ELEMENT_NODE)
             .map(Element.class::cast)
-            .map(param -> String.format("\"%s\": %s", 
-                param.getNodeName(), 
-                param.getTextContent().trim()))
-            .collect(Collectors.joining(",\n    ")))
-            .map(params -> "{\n    " + params + "\n}")
-            .map(JsonFormatter::formatJson)
-            .map(json -> "\n **Request body:**\n `"+json+"`")
-            .orElse("");
+            .collect(Collectors.toMap(
+                Element::getNodeName,
+                elem -> elem.getTextContent().trim()
+            )))
+            .orElse(new HashMap<>());
 
         String method = query.getAttribute("method").toUpperCase();
         String url = query.getTextContent().trim();
         String statusCode = response.getAttribute("status");
         String responseBody = JsonFormatter.formatJson(response.getTextContent().trim());
 
-        return String.format("%d. **%s** %s %s \n**Статус:** %s \n**Ответ:** \n`%s`\n",
+        // Подставляем параметры в URL 
+        String processedUrl = url;        
+        for (Map.Entry<String, String> entry : parameters.entrySet()) {
+            String paramPlaceholder = "${" + entry.getKey() + "}";
+            if (url.contains(paramPlaceholder)) {
+                // Если параметр используется в URL как placeholder
+                processedUrl = processedUrl.replace(paramPlaceholder, entry.getValue());
+            } else {
+                // Если параметр не используется в URL, добавляем его как query parameter
+                String separator = processedUrl.contains("?") ? "&" : "?";
+                processedUrl = processedUrl + separator + entry.getKey() + "=" + entry.getValue();
+            }
+        }
+
+        return String.format("%d. **%s** %s\n**Статус:** %s \n**Ответ:** \n`%s`\n",
             index,
             method,
-            url,
-            requestBody,
+            processedUrl,
             statusCode,
             responseBody
         );
